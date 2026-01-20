@@ -1,233 +1,227 @@
-"""
-🔍 Pipeline Leak Detection Dashboard with Groq LLM Chat
-Complete end-to-end Streamlit app. Deploy to GitHub Codespaces/Streamlit Cloud.
-Requirements: pip install streamlit groq pandas matplotlib seaborn openpyxl
-Secrets: Add GROQ_API_KEY to .streamlit/secrets.toml
-Files needed: df_pidws.xlsx, df_manual_digging.xlsx, df_lds_IV.xlsx
-"""
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-import os
 from io import BytesIO
 from groq import Groq
+import time
 
-# Page config
-st.set_page_config(
-    page_title="Leak Detection Dashboard + LLM Chat", 
-    layout="wide",
-    page_icon="🔍"
-)
-
+# Configure matplotlib
 plt.rcParams['figure.max_open_warning'] = 50
-st.title("🔍 Pipeline Leak Detection: Analysis + Groq LLM Chat")
 
-# --- DATA UPLOAD & PREPROCESSING ---
-uploaded_files = st.file_uploader(
-    "📁 Upload Excel files (df_pidws.xlsx, df_manual_digging.xlsx, df_lds_IV.xlsx):",
-    type=['xlsx'], accept_multiple_files=True
+st.set_page_config(
+    page_title="Leak Detection Dashboard", 
+    page_icon="🔍",
+    layout="wide"
 )
 
-if not uploaded_files:
-    st.info("👆 Please upload your Excel files to start analysis")
-    st.stop()
+st.title("🔍 Pipeline Leak Detection Dashboard")
+st.markdown("**AI-Powered Analysis for Quick Leak Location Detection**")
 
-# Load and validate files
-file_dict = {f.name: f for f in uploaded_files}
-required_files = ['df_pidws.xlsx', 'df_manual_digging.xlsx', 'df_lds_IV.xlsx']
+# --- Sidebar: Groq API Configuration ---
+with st.sidebar:
+    st.header("🤖 AI Configuration")
+    st.markdown("### Groq API Key")
+    api_key = st.text_input(
+        "Enter Groq API Key:", 
+        type="password",
+        help="Get free key: https://console.groq.com/keys"
+    )
+    
+    if st.button("🔗 Test Connection", type="secondary", use_container_width=True):
+        if api_key:
+            try:
+                client = Groq(api_key=api_key)
+                response = client.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[{"role": "user", "content": "Connected!"}],
+                    max_tokens=5
+                )
+                st.success("✅ **Connected successfully!**")
+                st.session_state.groq_client = client
+                st.session_state.api_key_valid = True
+            except Exception as e:
+                st.error(f"❌ **Connection failed:** {str(e)[:100]}...")
+        else:
+            st.warning("👆 Enter API key first")
 
-missing_files = [f for f in required_files if f not in file_dict]
-if missing_files:
-    st.error(f"❌ Missing files: {', '.join(missing_files)}")
-    st.stop()
+# Initialize session state
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'dataframes' not in st.session_state:
+    st.session_state.dataframes = {}
+if 'api_key_valid' not in st.session_state:
+    st.session_state.api_key_valid = False
 
-try:
-    df_pidws = pd.read_excel(file_dict['df_pidws.xlsx'])
-    df_manual_digging = pd.read_excel(file_dict['df_manual_digging.xlsx']) 
-    df_lds_IV = pd.read_excel(file_dict['df_lds_IV.xlsx'])
-    
-    # Preprocessing
-    df_manual_digging['DateTime'] = pd.to_datetime(df_manual_digging['DateTime'])
-    df_manual_digging['Date_new'] = df_manual_digging['DateTime'].dt.date
-    df_manual_digging['Time_new'] = df_manual_digging['DateTime'].dt.time
-    
-    df_lds_IV['Date'] = pd.to_datetime(df_lds_IV['Date'])
-    df_lds_IV['Time'] = pd.to_timedelta(df_lds_IV['Time'].astype(str))
-    df_lds_IV['DateTime'] = df_lds_IV['Date'] + df_lds_IV['Time']
-    
-    # Store in session state
-    st.session_state.dfs = {
-        'manual_digging': df_manual_digging,
-        'lds_iv': df_lds_IV,
-        'pidws': df_pidws
-    }
-    
-    st.session_state.df_summaries = {
-        name: df.describe(include='all').to_dict() for name, df in st.session_state.dfs.items()
-    }
-    
-    # Metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("⛏️ Digging Events", f"{len(df_manual_digging):,}")
-    col2.metric("💧 Leak Events", f"{len(df_lds_IV):,}")
-    col3.metric("📊 PIDWS Records", f"{len(df_pidws):,}")
-    
-    st.success("✅ Data loaded and preprocessed!")
-    
-except Exception as e:
-    st.error(f"❌ Error loading data: {e}")
-    st.stop()
+# --- Main Tabs ---
+tab1, tab2, tab3 = st.tabs(["📁 Data Upload", "📊 Visual Analysis", "🤖 AI Insights"])
 
-# --- TABS ---
-tab1, tab2, tab3 = st.tabs(["📊 Interactive Analysis", "🔗 All Chainages", "💬 LLM Data Chat"])
-
-# Tab 1: Interactive Chainage Analysis
+# Tab 1: Data Upload
 with tab1:
-    st.header("🎯 Chainage-Specific Analysis")
+    st.header("Upload Pipeline Data")
     
+    uploaded_files = st.file_uploader(
+        "Choose Excel files:",
+        type=['xlsx'], 
+        accept_multiple_files=True,
+        help="Required: df_manual_digging.xlsx, df_lds_IV.xlsx"
+    )
+    
+    if uploaded_files:
+        file_dict = {f.name: f for f in uploaded_files}
+        st.success(f"✅ Loaded **{len(uploaded_files)}** files")
+        
+        try:
+            # Load dataframes
+            if 'df_pidws.xlsx' in file_dict:
+                st.session_state.dataframes['df_pidws'] = pd.read_excel(file_dict['df_pidws.xlsx'])
+            if 'df_manual_digging.xlsx' in file_dict:
+                st.session_state.dataframes['df_manual_digging'] = pd.read_excel(file_dict['df_manual_digging.xlsx'])
+            if 'df_lds_IV.xlsx' in file_dict:
+                st.session_state.dataframes['df_lds_IV'] = pd.read_excel(file_dict['df_lds_IV.xlsx'])
+            
+            # Metrics
+            digging_count = len(st.session_state.dataframes.get('df_manual_digging', pd.DataFrame()))
+            leaks_count = len(st.session_state.dataframes.get('df_lds_IV', pd.DataFrame()))
+            pidws_count = len(st.session_state.dataframes.get('df_pidws', pd.DataFrame()))
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🔵 Digging Events", f"{digging_count:,}")
+            col2.metric("🔴 Leak Events", f"{leaks_count:,}")
+            col3.metric("📊 PIDWS Data", f"{pidws_count:,}")
+            
+        except Exception as e:
+            st.error(f"❌ File error: {str(e)}")
+
+# Tab 2: Visual Analysis
+with tab2:
+    if not st.session_state.dataframes:
+        st.info("👆 **Upload data first** in the Data tab")
+        st.stop()
+    
+    df_digging = st.session_state.dataframes.get('df_manual_digging', pd.DataFrame())
+    df_leaks = st.session_state.dataframes.get('df_lds_IV', pd.DataFrame())
+    
+    # Preprocess data
+    if not df_digging.empty and 'DateTime' in df_digging.columns:
+        df_digging['Date_new'] = pd.to_datetime(df_digging['DateTime']).dt.date
+        df_digging['Time_new'] = pd.to_datetime(df_digging['DateTime']).dt.time
+    
+    if not df_leaks.empty:
+        df_leaks['Date'] = pd.to_datetime(df_leaks['Date'])
+        df_leaks['Time'] = pd.to_timedelta(df_leaks['Time'].astype(str))
+        df_leaks['DateTime'] = df_leaks['Date'] + df_leaks['Time']
+    
+    st.success("✅ **Data ready for analysis**")
+    
+    # Analysis controls
     col1, col2 = st.columns(2)
     with col1:
-        target_chainage = st.number_input("Target Chainage (km):", value=25.4, min_value=0.0, step=0.1)
+        target_chainage = st.number_input("🎯 Target Chainage (km)", 25.4, 0.0, 100.0, 0.1)
     with col2:
-        tolerance = st.number_input("Tolerance (±km):", value=1.0, min_value=0.1, step=0.1)
+        tolerance = st.number_input("📏 Tolerance (±km)", 1.0, 0.1, 5.0, 0.1)
     
-    if st.button("🚀 Analyze Chainage", type="primary"):
-        df_digging_filtered = df_manual_digging[
-            abs(df_manual_digging['Original_chainage'] - target_chainage) <= tolerance
-        ].copy()
+    if st.button("🚀 **Analyze Chainage**", type="primary", use_container_width=True):
+        # Filter data
+        digging_filtered = df_digging[
+            abs(df_digging['Original_chainage'] - target_chainage) <= tolerance
+        ] if not df_digging.empty else pd.DataFrame()
         
-        df_leaks_filtered = df_lds_IV[
-            abs(df_lds_IV['chainage'] - target_chainage) <= tolerance
-        ].copy()
+        leaks_filtered = df_leaks[
+            abs(df_leaks['chainage'] - target_chainage) <= tolerance
+        ] if not df_leaks.empty else pd.DataFrame()
         
-        col1, col2 = st.columns(2)
-        col1.metric("🔵 Digging Events", len(df_digging_filtered))
-        col2.metric("🔴 Leak Events", len(df_leaks_filtered))
+        # Results
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🔵 Digging Events", len(digging_filtered))
+        col2.metric("🔴 Leak Events", len(leaks_filtered))
+        col3.metric("📈 Correlation", f"{len(digging_filtered) + len(leaks_filtered)} total")
         
-        # Scatter plot
+        # Visualization
         plt.close('all')
-        fig, ax = plt.subplots(figsize=(16, 10))
+        fig, ax = plt.subplots(figsize=(16, 9))
         
-        if not df_digging_filtered.empty:
+        if not digging_filtered.empty:
             sns.scatterplot(
-                data=df_digging_filtered, x='DateTime', y='Original_chainage',
-                color='blue', label='Digging', marker='o', s=80, ax=ax
+                data=digging_filtered, x='DateTime', y='Original_chainage',
+                color='blue', label='Manual Digging', marker='o', s=80, ax=ax
             )
         
-        if not df_leaks_filtered.empty:
+        if not leaks_filtered.empty:
             sns.scatterplot(
-                data=df_leaks_filtered, x='DateTime', y='chainage',
-                color='red', label='Leaks', marker='X', s=120, ax=ax
+                data=leaks_filtered, x='DateTime', y='chainage',
+                color='red', label='Detected Leaks', marker='X', s=120, ax=ax
             )
         
-        plt.title(f'Digging vs Leaks: Chainage {target_chainage} ±{tolerance}km', fontsize=16, pad=20)
-        plt.xlabel('DateTime', fontsize=12)
+        plt.title(f'🔍 Chainage {target_chainage} ±{tolerance}km: Digging vs Leaks', 
+                 fontsize=16, pad=20)
+        plt.xlabel('Date & Time', fontsize=12)
         plt.ylabel('Chainage (km)', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
-        plt.xticks(rotation=45)
         plt.tight_layout()
         st.pyplot(fig)
-        
-        # Time series table
-        if not df_digging_filtered.empty or not df_leaks_filtered.empty:
-            st.subheader("📋 Event Timeline")
-            timeline = pd.concat([
-                df_digging_filtered[['DateTime', 'Original_chainage']].assign(Type='Digging'),
-                df_leaks_filtered[['DateTime', 'chainage']].rename(columns={'chainage': 'Original_chainage'}).assign(Type='Leak')
-            ]).sort_values('DateTime').reset_index(drop=True)
-            st.dataframe(timeline.head(20))
 
-# Tab 2: All Chainages Analysis
-with tab2:
-    st.header("🌐 Complete Chainage Analysis")
-    
-    unique_chainages = sorted(df_manual_digging['Original_chainage'].unique())
-    st.info(f"Found {len(unique_chainages)} unique chainages")
-    
-    tolerance_all = st.slider("Tolerance (km)", 0.1, 2.0, 1.0)
-    max_plots = st.slider("Max Plots", 5, 25, 10)
-    
-    # Summary table
-    chainage_analysis = []
-    for chainage in unique_chainages:
-        digs = len(df_manual_digging[abs(df_manual_digging['Original_chainage'] - chainage) <= tolerance_all])
-        leaks = len(df_lds_IV[abs(df_lds_IV['chainage'] - chainage) <= tolerance_all])
-        chainage_analysis.append({'Chainage': chainage, 'Digging': digs, 'Leaks': leaks, 'Ratio': digs/leaks if leaks > 0 else 0})
-    
-    df_analysis = pd.DataFrame(chainage_analysis)
-    st.dataframe(df_analysis.head(20))
-    
-    # Top correlations
-    df_analysis['Match'] = df_analysis['Digging'] * df_analysis['Leaks']
-    top_matches = df_analysis.nlargest(10, 'Match')
-    st.subheader("🏆 Top 10 Chainages (Digging × Leaks)")
-    st.bar_chart(top_matches.set_index('Chainage')[['Match']])
-
-# Tab 3: Groq LLM Chat
+# Tab 3: AI Chat
 with tab3:
-    st.header("💬 AI Data Analyst (Groq + Llama 3.3)")
+    st.header("🤖 AI Pipeline Analyst")
     
-    # Groq client
-    try:
-        client = Groq(api_key=st.secrets["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"])
-        st.success("✅ Groq connected!")
-    except:
-        st.error("❌ Add GROQ_API_KEY to .streamlit/secrets.toml")
-        st.stop()
-    
-    # Chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
-    # Display chat
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # Data context for LLM
-    data_context = f"""
-    Pipeline Leak Detection Data:
-    - Digging Events: {len(df_manual_digging)} rows (Original_chainage km, DateTime, Event Duration)
-    - Leak Events: {len(df_lds_IV)} rows (chainage km, DateTime)  
-    - PIDWS: {len(df_pidws)} rows
-    
-    Key columns: Original_chainage/chainage (km locations), DateTime (timestamps).
-    Analyze correlations between digging & leaks by chainage/time. Suggest matplotlib/seaborn plots.
-    Respond with insights, tables, or Python code for visualizations.
-    """
-    
-    # Chat input
-    if prompt := st.chat_input("Ask about leaks, chainages, correlations..."):
-        # Add user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    if not st.session_state.dataframes:
+        st.warning("👆 **Upload data first**")
+    elif not st.session_state.api_key_valid:
+        st.warning("👆 **Enter valid Groq API key** in sidebar")
+    else:
+        # Data context for AI
+        df_digging = st.session_state.dataframes.get('df_manual_digging', pd.DataFrame())
+        df_leaks = st.session_state.dataframes.get('df_lds_IV', pd.DataFrame())
         
-        # Prepare messages
-        messages = [{"role": "system", "content": data_context}]
-        for msg in st.session_state.messages:
-            messages.append(msg)
+        context = f"""
+        **Pipeline Data Summary:**
+        • Manual digging events: {len(df_digging)}
+        • Leak detection events: {len(df_leaks)}
+        • Digging columns: {', '.join(df_digging.columns[:5])}
+        • Leaks columns: {', '.join(df_leaks.columns[:5])}
         
-        # Stream response
-        with st.chat_message("assistant"):
-            stream = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=messages,
-                temperature=0.1,
-                max_tokens=1500,
-                stream=True,
-            )
-            response = st.write_stream(chunk.choices[0].delta.content or "" for chunk in stream)
-            st.session_state.messages.append({"role": "assistant", "content": response})
+        Analyze correlations, predict leak patterns, recommend detection improvements.
+        """
+        st.info(context)
+        
+        # Chat history
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        
+        # Chat input
+        if prompt := st.chat_input("💭 Ask about leaks, chainages, patterns..."):
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            
+            with st.chat_message("assistant"):
+                st.markdown("**🤔 Analyzing...**")
+                
+                client = st.session_state.groq_client
+                ai_context = f"{context}\n\n**User Question:** {prompt}"
+                
+                response = client.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[
+                        {"role": "system", "content": "You are a pipeline leak detection expert working for Indian Oil Corporation. Provide specific, actionable insights for operations managers."},
+                        {"role": "user", "content": ai_context}
+                    ],
+                    temperature=0.1,
+                    max_tokens=1200
+                )
+                
+                answer = response.choices[0].message.content
+                st.markdown(answer)
+                
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
 # Footer
 st.markdown("---")
 st.markdown("""
-**💡 Usage:** Upload files → Analysis tab for interactive plots → LLM Chat for natural questions.
-**Deploy:** GitHub → Settings → Secrets → Add GROQ_API_KEY → Streamlit app connected to repo.
-**Files:** Ensure df_pidws.xlsx, df_manual_digging.xlsx, df_lds_IV.xlsx are in repo root.
+*Built for pipeline operations at Indian Oil Corporation Limited | 🔍 Quick leak location analytics*
 """)
