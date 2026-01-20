@@ -3,225 +3,229 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-from io import BytesIO
 from groq import Groq
-import time
+import traceback
 
-# Configure matplotlib
-plt.rcParams['figure.max_open_warning'] = 50
+# Fix matplotlib warnings
+plt.rcParams['figure.max_open_warning'] = 0
+plt.style.use('default')
 
-st.set_page_config(
-    page_title="Leak Detection Dashboard", 
-    page_icon="🔍",
-    layout="wide"
-)
+st.set_page_config(page_title="Leak Detection Dashboard", layout="wide", page_icon="🔍")
 
 st.title("🔍 Pipeline Leak Detection Dashboard")
-st.markdown("**AI-Powered Analysis for Quick Leak Location Detection**")
+st.markdown("**AI Analytics for IOC Pipeline Operations**")
 
-# --- Sidebar: Groq API Configuration ---
+# Initialize session state
+@st.cache_data
+def init_session():
+    return {
+        'chat_history': [],
+        'dataframes': {},
+        'api_key_valid': False
+    }
+
+if 'session_init' not in st.session_state:
+    st.session_state.session_init = init_session()
+
+# Sidebar - API Key
 with st.sidebar:
-    st.header("🤖 AI Configuration")
-    st.markdown("### Groq API Key")
-    api_key = st.text_input(
-        "Enter Groq API Key:", 
-        type="password",
-        help="Get free key: https://console.groq.com/keys"
-    )
+    st.header("🤖 Groq Setup")
+    api_key = st.text_input("🔑 Groq API Key", type="password", 
+                           help="https://console.groq.com/keys")
     
-    if st.button("🔗 Test Connection", type="secondary", use_container_width=True):
-        if api_key:
+    if st.button("✅ Test API", use_container_width=True):
+        if api_key and api_key.startswith('gsk_'):
             try:
                 client = Groq(api_key=api_key)
                 response = client.chat.completions.create(
                     model="llama3-8b-8192",
-                    messages=[{"role": "user", "content": "Connected!"}],
+                    messages=[{"role": "user", "content": "OK"}],
                     max_tokens=5
                 )
-                st.success("✅ **Connected successfully!**")
+                st.success("✅ **API Connected!**")
                 st.session_state.groq_client = client
                 st.session_state.api_key_valid = True
             except Exception as e:
-                st.error(f"❌ **Connection failed:** {str(e)[:100]}...")
+                st.error(f"❌ API Error: {str(e)[:100]}")
         else:
-            st.warning("👆 Enter API key first")
+            st.error("❌ Invalid key format (should start with 'gsk_')")
 
-# Initialize session state
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-if 'dataframes' not in st.session_state:
-    st.session_state.dataframes = {}
-if 'api_key_valid' not in st.session_state:
-    st.session_state.api_key_valid = False
+# Main Tabs
+tab1, tab2, tab3 = st.tabs(["📁 Upload Data", "📊 Analysis", "🤖 AI Chat"])
 
-# --- Main Tabs ---
-tab1, tab2, tab3 = st.tabs(["📁 Data Upload", "📊 Visual Analysis", "🤖 AI Insights"])
-
-# Tab 1: Data Upload
+# TAB 1: Data Upload
 with tab1:
-    st.header("Upload Pipeline Data")
-    
+    st.header("Upload Excel Files")
     uploaded_files = st.file_uploader(
-        "Choose Excel files:",
-        type=['xlsx'], 
-        accept_multiple_files=True,
-        help="Required: df_manual_digging.xlsx, df_lds_IV.xlsx"
+        "Choose files", type=['xlsx'], accept_multiple_files=True,
+        help="df_manual_digging.xlsx, df_lds_IV.xlsx"
     )
     
     if uploaded_files:
-        file_dict = {f.name: f for f in uploaded_files}
-        st.success(f"✅ Loaded **{len(uploaded_files)}** files")
-        
         try:
-            # Load dataframes
-            if 'df_pidws.xlsx' in file_dict:
-                st.session_state.dataframes['df_pidws'] = pd.read_excel(file_dict['df_pidws.xlsx'])
-            if 'df_manual_digging.xlsx' in file_dict:
-                st.session_state.dataframes['df_manual_digging'] = pd.read_excel(file_dict['df_manual_digging.xlsx'])
-            if 'df_lds_IV.xlsx' in file_dict:
-                st.session_state.dataframes['df_lds_IV'] = pd.read_excel(file_dict['df_lds_IV.xlsx'])
+            dataframes = {}
+            for file in uploaded_files:
+                df = pd.read_excel(file)
+                dataframes[file.name] = df
+                st.success(f"✅ {file.name}: {len(df)} rows")
             
-            # Metrics
-            digging_count = len(st.session_state.dataframes.get('df_manual_digging', pd.DataFrame()))
-            leaks_count = len(st.session_state.dataframes.get('df_lds_IV', pd.DataFrame()))
-            pidws_count = len(st.session_state.dataframes.get('df_pidws', pd.DataFrame()))
+            st.session_state.dataframes = dataframes
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("🔵 Digging Events", f"{digging_count:,}")
-            col2.metric("🔴 Leak Events", f"{leaks_count:,}")
-            col3.metric("📊 PIDWS Data", f"{pidws_count:,}")
+            # Show metrics
+            digging = dataframes.get('df_manual_digging.xlsx', pd.DataFrame())
+            leaks = dataframes.get('df_lds_IV.xlsx', pd.DataFrame())
+            
+            col1, col2 = st.columns(2)
+            col1.metric("🔵 Digging", len(digging))
+            col2.metric("🔴 Leaks", len(leaks))
             
         except Exception as e:
-            st.error(f"❌ File error: {str(e)}")
+            st.error(f"❌ Upload Error: {str(e)}")
+            st.info("💡 Expected columns: DateTime, Original_chainage, chainage")
 
-# Tab 2: Visual Analysis
+# TAB 2: Analysis (SINGLE TOLERANCE)
 with tab2:
     if not st.session_state.dataframes:
-        st.info("👆 **Upload data first** in the Data tab")
+        st.info("👆 Upload files first")
         st.stop()
     
-    df_digging = st.session_state.dataframes.get('df_manual_digging', pd.DataFrame())
-    df_leaks = st.session_state.dataframes.get('df_lds_IV', pd.DataFrame())
+    digging = st.session_state.dataframes.get('df_manual_digging.xlsx', pd.DataFrame())
+    leaks = st.session_state.dataframes.get('df_lds_IV.xlsx', pd.DataFrame())
     
-    # Preprocess data
-    if not df_digging.empty and 'DateTime' in df_digging.columns:
-        df_digging['Date_new'] = pd.to_datetime(df_digging['DateTime']).dt.date
-        df_digging['Time_new'] = pd.to_datetime(df_digging['DateTime']).dt.time
+    # Safe preprocessing
+    def safe_preprocess(df, is_digging=False):
+        if df.empty:
+            return df
+        try:
+            if is_digging and 'DateTime' in df.columns:
+                df['DateTime'] = pd.to_datetime(df['DateTime'])
+            elif 'Date' in df.columns and 'Time' in df.columns:
+                df['Date'] = pd.to_datetime(df['Date'])
+                df['Time'] = pd.to_timedelta(df['Time'].astype(str))
+                df['DateTime'] = df['Date'] + df['Time']
+            return df
+        except:
+            return df
     
-    if not df_leaks.empty:
-        df_leaks['Date'] = pd.to_datetime(df_leaks['Date'])
-        df_leaks['Time'] = pd.to_timedelta(df_leaks['Time'].astype(str))
-        df_leaks['DateTime'] = df_leaks['Date'] + df_leaks['Time']
+    digging = safe_preprocess(digging, True)
+    leaks = safe_preprocess(leaks, False)
     
-    st.success("✅ **Data ready for analysis**")
+    # SIMPLIFIED CONTROLS - SINGLE TOLERANCE
+    col1, col2 = st.columns([2, 1])  # Wider chainage input
+    chainage = col1.number_input("🎯 **Target Chainage (km)**", 0.0, 100.0, 25.4, 0.1)
+    tolerance = col2.number_input("📏 **Tolerance (±km)**", 0.1, 5.0, 1.0, 0.1)
     
-    # Analysis controls
-    col1, col2 = st.columns(2)
-    with col1:
-        target_chainage = st.number_input("🎯 Target Chainage (km)", 25.4, 0.0, 100.0, 0.1)
-    with col2:
-        tolerance = st.number_input("📏 Tolerance (±km)", 1.0, 0.1, 5.0, 0.1)
+    st.info(f"🔍 Searching **{chainage} ±{tolerance} km** range")
     
-    if st.button("🚀 **Analyze Chainage**", type="primary", use_container_width=True):
-        # Filter data
-        digging_filtered = df_digging[
-            abs(df_digging['Original_chainage'] - target_chainage) <= tolerance
-        ] if not df_digging.empty else pd.DataFrame()
+    if st.button("📈 **RUN ANALYSIS**", type="primary", use_container_width=True):
+        # Filter with SINGLE tolerance
+        dig_filtered = digging[
+            (digging['Original_chainage'] >= chainage - tolerance) & 
+            (digging['Original_chainage'] <= chainage + tolerance)
+        ] if 'Original_chainage' in digging.columns else pd.DataFrame()
         
-        leaks_filtered = df_leaks[
-            abs(df_leaks['chainage'] - target_chainage) <= tolerance
-        ] if not df_leaks.empty else pd.DataFrame()
+        leak_filtered = leaks[
+            (leaks['chainage'] >= chainage - tolerance) & 
+            (leaks['chainage'] <= chainage + tolerance)
+        ] if 'chainage' in leaks.columns else pd.DataFrame()
         
-        # Results
+        # Metrics
         col1, col2, col3 = st.columns(3)
-        col1.metric("🔵 Digging Events", len(digging_filtered))
-        col2.metric("🔴 Leak Events", len(leaks_filtered))
-        col3.metric("📈 Correlation", f"{len(digging_filtered) + len(leaks_filtered)} total")
+        col1.metric("🔵 Digging Events", len(dig_filtered))
+        col2.metric("🔴 Leak Events", len(leak_filtered))
+        col3.metric("📊 Total Matches", len(dig_filtered) + len(leak_filtered))
         
-        # Visualization
-        plt.close('all')
-        fig, ax = plt.subplots(figsize=(16, 9))
+        # Plot
+        fig, ax = plt.subplots(figsize=(14, 8))
+        colors = {'digging': 'blue', 'leak': 'red'}
+        markers = {'digging': 'o', 'leak': 'X'}
+        sizes = {'digging': 60, 'leak': 100}
         
-        if not digging_filtered.empty:
-            sns.scatterplot(
-                data=digging_filtered, x='DateTime', y='Original_chainage',
-                color='blue', label='Manual Digging', marker='o', s=80, ax=ax
-            )
+        if not dig_filtered.empty:
+            ax.scatter(dig_filtered.get('DateTime', range(len(dig_filtered))), 
+                      dig_filtered['Original_chainage'], 
+                      c=colors['digging'], s=sizes['digging'], 
+                      label='Manual Digging', marker=markers['digging'])
         
-        if not leaks_filtered.empty:
-            sns.scatterplot(
-                data=leaks_filtered, x='DateTime', y='chainage',
-                color='red', label='Detected Leaks', marker='X', s=120, ax=ax
-            )
+        if not leak_filtered.empty:
+            ax.scatter(leak_filtered.get('DateTime', range(len(leak_filtered))), 
+                      leak_filtered['chainage'], 
+                      c=colors['leak'], s=sizes['leak'], 
+                      label='Detected Leaks', marker=markers['leak'])
         
-        plt.title(f'🔍 Chainage {target_chainage} ±{tolerance}km: Digging vs Leaks', 
-                 fontsize=16, pad=20)
-        plt.xlabel('Date & Time', fontsize=12)
-        plt.ylabel('Chainage (km)', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+        ax.axhspan(chainage - tolerance, chainage + tolerance, 
+                  alpha=0.2, color='green', label=f'Target Range ±{tolerance}km')
+        ax.axhline(chainage, color='orange', linestyle='--', linewidth=2, label=f'Target: {chainage}km')
+        
+        ax.set_title(f'🔍 Chainage Analysis: {chainage} ±{tolerance}km', fontsize=16, pad=20)
+        ax.set_xlabel('DateTime / Index', fontsize=12)
+        ax.set_ylabel('Chainage (km)', fontsize=12)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
         plt.tight_layout()
         st.pyplot(fig)
 
-# Tab 3: AI Chat
+        # Summary table
+        st.subheader("📋 Results Summary")
+        summary_data = {
+            'Metric': ['Digging Events', 'Leak Events', 'Total', 'Range Searched'],
+            'Value': [len(dig_filtered), len(leak_filtered), len(dig_filtered)+len(leak_filtered), f'{chainage} ±{tolerance}km']
+        }
+        st.table(pd.DataFrame(summary_data))
+
+# TAB 3: AI Chat (unchanged)
 with tab3:
-    st.header("🤖 AI Pipeline Analyst")
+    st.header("🤖 Ask AI About Your Data")
     
     if not st.session_state.dataframes:
-        st.warning("👆 **Upload data first**")
-    elif not st.session_state.api_key_valid:
-        st.warning("👆 **Enter valid Groq API key** in sidebar")
+        st.warning("👆 Upload data first")
+    elif not st.session_state.get('api_key_valid', False):
+        st.warning("👆 Enter valid API key")
     else:
-        # Data context for AI
-        df_digging = st.session_state.dataframes.get('df_manual_digging', pd.DataFrame())
-        df_leaks = st.session_state.dataframes.get('df_lds_IV', pd.DataFrame())
-        
-        context = f"""
-        **Pipeline Data Summary:**
-        • Manual digging events: {len(df_digging)}
-        • Leak detection events: {len(df_leaks)}
-        • Digging columns: {', '.join(df_digging.columns[:5])}
-        • Leaks columns: {', '.join(df_leaks.columns[:5])}
-        
-        Analyze correlations, predict leak patterns, recommend detection improvements.
-        """
-        st.info(context)
-        
-        # Chat history
+        # Chat display
+        if 'chat_history' not in st.session_state:
+            st.session_state.chat_history = []
+            
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
         
         # Chat input
-        if prompt := st.chat_input("💭 Ask about leaks, chainages, patterns..."):
+        prompt = st.chat_input("Ask about patterns, predictions, improvements...")
+        if prompt:
             st.session_state.chat_history.append({"role": "user", "content": prompt})
             
             with st.chat_message("user"):
                 st.markdown(prompt)
             
             with st.chat_message("assistant"):
-                st.markdown("**🤔 Analyzing...**")
-                
-                client = st.session_state.groq_client
-                ai_context = f"{context}\n\n**User Question:** {prompt}"
-                
-                response = client.chat.completions.create(
-                    model="llama3-8b-8192",
-                    messages=[
-                        {"role": "system", "content": "You are a pipeline leak detection expert working for Indian Oil Corporation. Provide specific, actionable insights for operations managers."},
-                        {"role": "user", "content": ai_context}
-                    ],
-                    temperature=0.1,
-                    max_tokens=1200
-                )
-                
-                answer = response.choices[0].message.content
-                st.markdown(answer)
-                
-                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                with st.spinner("AI analyzing..."):
+                    client = st.session_state.groq_client
+                    digging = st.session_state.dataframes.get('df_manual_digging.xlsx', pd.DataFrame())
+                    leaks = st.session_state.dataframes.get('df_lds_IV.xlsx', pd.DataFrame())
+                    
+                    context = f"""
+                    Pipeline data: {len(digging)} digging events, {len(leaks)} leak events.
+                    Columns - Digging: {list(digging.columns)}
+                    Leaks: {list(leaks.columns)}
+                    Question: {prompt}
+                    """
+                    
+                    try:
+                        response = client.chat.completions.create(
+                            model="llama3-8b-8192",
+                            messages=[
+                                {"role": "system", "content": "You are a pipeline expert for Indian Oil. Give specific leak detection insights."},
+                                {"role": "user", "content": context}
+                            ],
+                            max_tokens=800,
+                            temperature=0.2
+                        )
+                        answer = response.choices[0].message.content
+                        st.markdown(answer)
+                        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                    except Exception as e:
+                        st.error(f"AI Error: {str(e)}")
 
-# Footer
 st.markdown("---")
-st.markdown("""
-*Built for pipeline operations at Indian Oil Corporation Limited | 🔍 Quick leak location analytics*
-""")
+st.caption("💡 Indian Oil Corporation | Pipeline Leak Analytics | Single Tolerance Mode")
