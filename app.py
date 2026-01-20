@@ -173,7 +173,7 @@ with tab3:
     
     # Groq client
     try:
-        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+        client = Groq(api_key=st.secrets["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"])
         st.success("✅ Groq connected!")
     except:
         st.error("❌ Add GROQ_API_KEY to .streamlit/secrets.toml")
